@@ -714,6 +714,202 @@ func TestQuatSlerp(t *testing.T) {
 	}
 }
 
+// quatAngleBetween returns the rotation angle between the orientations of two
+// quaternions, in radians. Sign-agnostic: q and -q are the same orientation.
+func quatAngleBetween(a, b Quat) float64 {
+	dot := Abs(a.Normalize().Dot(b.Normalize()))
+	return 2 * float64(math.Acos(float64(Clamp(dot, -1, 1))))
+}
+
+// TestQuatNlerpShortestPath checks the "flipped keyframe" scenario: two
+// adjacent animation keyframes represent nearby orientations, but the second
+// one is stored with the opposite quaternion sign (q vs -q). The interpolation
+// must still follow the short arc and never swing around to the opposite
+// orientation.
+func TestQuatNlerpShortestPath(t *testing.T) {
+	t.Parallel()
+
+	start := QuatRotate(DegToRad(10), Vec3{0, 1, 0}.Normalize())
+	end := QuatRotate(DegToRad(100), Vec3{0, 1, 0}.Normalize()).Scale(-1) // same orientation, flipped sign
+
+	total := quatAngleBetween(start, end) // 90 degrees along the short arc
+	if want := DegToRad(90); Abs(total-want) > 1e-5 {
+		t.Fatalf("short-arc angle between keyframes = %v, want %v", total, want)
+	}
+
+	const steps = 20
+	prevAngle := float64(0)
+	for i := 0; i <= steps; i++ {
+		amount := float64(i) / steps
+		q := QuatNlerp(start, end, amount)
+
+		if l := q.Len(); Abs(l-1) > 1e-5 {
+			t.Errorf("QuatNlerp(%v) result not unit length: |q| = %v", amount, l)
+		}
+
+		angle := quatAngleBetween(start, q)
+		if angle < prevAngle-1e-4 {
+			t.Errorf("QuatNlerp(%v) moved backwards along the arc: angle %v < previous %v", amount, angle, prevAngle)
+		}
+		if angle > total+1e-4 {
+			t.Errorf("QuatNlerp(%v) overshot the short arc: angle %v > total %v (orientation flipped)", amount, angle, total)
+		}
+		prevAngle = angle
+	}
+
+	// The midpoint must be halfway along the 90-degree sweep, not at the antipode.
+	mid := QuatNlerp(start, end, 0.5)
+	if angle := quatAngleBetween(start, mid); Abs(angle-DegToRad(45)) > 1e-3 {
+		t.Errorf("QuatNlerp midpoint angle from start = %v rad, want ~%v", angle, DegToRad(45))
+	}
+}
+
+// TestQuatSlerpShortestPath is the same flipped-keyframe scenario as
+// TestQuatNlerpShortestPath, for QuatSlerp.
+func TestQuatSlerpShortestPath(t *testing.T) {
+	t.Parallel()
+
+	start := QuatRotate(DegToRad(10), Vec3{0, 1, 0}.Normalize())
+	end := QuatRotate(DegToRad(100), Vec3{0, 1, 0}.Normalize()).Scale(-1) // same orientation, flipped sign
+
+	total := quatAngleBetween(start, end)
+
+	const steps = 20
+	prevAngle := float64(0)
+	for i := 0; i <= steps; i++ {
+		amount := float64(i) / steps
+		q := QuatSlerp(start, end, amount)
+
+		if l := q.Len(); Abs(l-1) > 1e-5 {
+			t.Errorf("QuatSlerp(%v) result not unit length: |q| = %v", amount, l)
+		}
+
+		angle := quatAngleBetween(start, q)
+		if angle < prevAngle-1e-4 {
+			t.Errorf("QuatSlerp(%v) moved backwards along the arc: angle %v < previous %v", amount, angle, prevAngle)
+		}
+		if angle > total+1e-4 {
+			t.Errorf("QuatSlerp(%v) overshot the short arc: angle %v > total %v (orientation flipped)", amount, angle, total)
+		}
+		prevAngle = angle
+	}
+}
+
+// TestQuatSlerpConstantVelocity verifies that QuatSlerp advances the rotation
+// by the same angle on every equal step of the interpolation parameter.
+func TestQuatSlerpConstantVelocity(t *testing.T) {
+	t.Parallel()
+
+	start := QuatIdent()
+	end := QuatRotate(DegToRad(120), Vec3{1, 2, 3}.Normalize())
+
+	const steps = 12
+	want := quatAngleBetween(start, end) / steps
+	prev := start
+	for i := 1; i <= steps; i++ {
+		q := QuatSlerp(start, end, float64(i)/steps)
+		if step := quatAngleBetween(prev, q); Abs(step-want) > 1e-4 {
+			t.Errorf("QuatSlerp step %d advanced %v rad, want constant %v", i, step, want)
+		}
+		prev = q
+	}
+}
+
+// TestQuatInterpCurveComparison samples QuatSlerp and QuatNlerp over the same
+// arc and compares their angular velocity profiles. Run with -v to see the
+// curve table. It also verifies both interpolators agree on the endpoints and
+// that Nlerp's deviation from the constant-velocity Slerp curve stays bounded.
+func TestQuatInterpCurveComparison(t *testing.T) {
+	t.Parallel()
+
+	start := QuatIdent()
+	end := QuatRotate(DegToRad(90), Vec3{0, 1, 0})
+
+	const steps = 10
+	total := quatAngleBetween(start, end)
+
+	t.Logf("total rotation: %.4f rad (%.1f deg)", total, RadToDeg(total))
+	t.Logf("%6s %12s %12s %12s %12s", "t", "slerp deg", "nlerp deg", "slerp vel", "nlerp vel")
+
+	prevSlerp, prevNlerp := start, start
+	maxDeviation := float64(0)
+	for i := 0; i <= steps; i++ {
+		amount := float64(i) / steps
+		s := QuatSlerp(start, end, amount)
+		n := QuatNlerp(start, end, amount)
+
+		slerpAngle := quatAngleBetween(start, s)
+		nlerpAngle := quatAngleBetween(start, n)
+
+		if i > 0 {
+			t.Logf("%6.2f %12.4f %12.4f %12.4f %12.4f",
+				amount, RadToDeg(slerpAngle), RadToDeg(nlerpAngle),
+				RadToDeg(quatAngleBetween(prevSlerp, s)), RadToDeg(quatAngleBetween(prevNlerp, n)))
+		} else {
+			t.Logf("%6.2f %12.4f %12.4f %12s %12s", amount, RadToDeg(slerpAngle), RadToDeg(nlerpAngle), "-", "-")
+		}
+
+		if l := s.Len(); Abs(l-1) > 1e-5 {
+			t.Errorf("QuatSlerp(%v) result not unit length: |q| = %v", amount, l)
+		}
+		if l := n.Len(); Abs(l-1) > 1e-5 {
+			t.Errorf("QuatNlerp(%v) result not unit length: |q| = %v", amount, l)
+		}
+
+		if dev := quatAngleBetween(s, n); dev > maxDeviation {
+			maxDeviation = dev
+		}
+
+		prevSlerp, prevNlerp = s, n
+	}
+
+	t.Logf("max angular deviation of Nlerp from Slerp: %.4f deg", RadToDeg(maxDeviation))
+
+	// Both interpolators must hit the endpoints.
+	if a := quatAngleBetween(QuatSlerp(start, end, 0), start); a > 1e-4 {
+		t.Errorf("QuatSlerp(t=0) is %v rad away from start", a)
+	}
+	if a := quatAngleBetween(QuatSlerp(start, end, 1), end); a > 1e-4 {
+		t.Errorf("QuatSlerp(t=1) is %v rad away from end", a)
+	}
+	if a := quatAngleBetween(QuatNlerp(start, end, 0), start); a > 1e-4 {
+		t.Errorf("QuatNlerp(t=0) is %v rad away from start", a)
+	}
+	if a := quatAngleBetween(QuatNlerp(start, end, 1), end); a > 1e-4 {
+		t.Errorf("QuatNlerp(t=1) is %v rad away from end", a)
+	}
+
+	// Nlerp is not constant-velocity, but over a 90-degree arc its orientation
+	// must stay within a few degrees of the Slerp curve.
+	if maxDeviation > DegToRad(5) {
+		t.Errorf("Nlerp deviates from Slerp by %v rad, want < %v", maxDeviation, DegToRad(5))
+	}
+}
+
+// TestQuatNlerpUnitLength checks that QuatNlerp always returns a unit
+// quaternion, including for opposite-sign inputs and non-unit inputs.
+func TestQuatNlerpUnitLength(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		A, B Quat
+	}{
+		{QuatIdent(), QuatRotate(DegToRad(45), Vec3{1, 0, 0})},
+		{QuatIdent(), QuatRotate(DegToRad(45), Vec3{1, 0, 0}).Scale(-1)},                               // flipped sign
+		{QuatRotate(DegToRad(-30), Vec3{0, 0, 1}), QuatRotate(DegToRad(170), Vec3{0, 1, 0}).Scale(-3)}, // flipped sign, non-unit
+		{QuatRotate(DegToRad(80), Vec3{1, 1, 0}.Normalize()), QuatRotate(DegToRad(-80), Vec3{1, 1, 0}.Normalize())},
+	}
+
+	for _, c := range tests {
+		for i := 0; i <= 10; i++ {
+			amount := float64(i) / 10
+			if l := QuatNlerp(c.A, c.B, amount).Len(); Abs(l-1) > 1e-5 {
+				t.Errorf("QuatNlerp(%v, %v, %v) not unit length: |q| = %v", c.A, c.B, amount, l)
+			}
+		}
+	}
+}
+
 func TestQuatDot(t *testing.T) {
 	tests := []struct {
 		A, B     Quat

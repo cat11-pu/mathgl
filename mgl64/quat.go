@@ -253,11 +253,22 @@ func QuatLerp(q1, q2 Quat, amount float64) Quat {
 // QuatNlerp is a *Normalized* *L*inear Int*erp*olation between two Quaternions. Cheaper than Slerp
 // and usually just as good. This is literally Lerp with Normalize() called on it.
 //
+// Like QuatSlerp, this always takes the shortest path between the two
+// orientations: if the quaternions' dot product is negative, one of them is
+// negated first (q and -q represent the same orientation).
+//
 // Unlike Slerp, constant velocity isn't maintained, but it's much faster and
 // Nlerp(q1,q2) and Nlerp(q2,q1) return the same path. You should probably
 // use this more often unless you're suffering from choppiness due to the
 // non-constant velocity problem.
 func QuatNlerp(q1, q2 Quat, amount float64) Quat {
+	// Make sure we take the shortest path in case the dot product is negative.
+	// The sign of the dot product is scale-invariant, so this is correct even
+	// if the inputs aren't unit quaternions.
+	if q1.Dot(q2) < 0 {
+		q2 = q2.Scale(-1)
+	}
+
 	return QuatLerp(q1, q2, amount).Normalize()
 }
 
