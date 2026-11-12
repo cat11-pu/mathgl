@@ -43,6 +43,12 @@ var mgl64RewriteRules = []string{
 	"a.Float32 -> a.Float64",
 	"math.MaxFloat32 -> math.MaxFloat64",
 	"math.SmallestNonzeroFloat32 -> math.SmallestNonzeroFloat64",
+	// Polar decomposition tolerances are precision specific. The single
+	// precision constants appear only in the polar decomposition sources.
+	"polarReconstructionTolerance32 -> polarReconstructionTolerance64",
+	"polarConvergenceTolerance32 -> polarConvergenceTolerance64",
+	"polarConditionLimit32 -> polarConditionLimit64",
+	"abs32 -> abs64",
 }
 
 func main() {
@@ -150,6 +156,54 @@ func genMgl64(destPath string) {
 	if err := filepath.Walk(".", HandleFile); err != nil {
 		panic(err)
 	}
+
+	if err := tightenPolarConstants(destPath); err != nil {
+		panic(err)
+	}
+}
+
+// tightenPolarConstants replaces the single precision polar decomposition
+// tuning values with their double precision counterparts. The replacements are
+// scoped to the generated polar decomposition source so unrelated files are
+// never touched.
+func tightenPolarConstants(destPath string) error {
+	polarFiles := []string{"polar_decomposition.go", "polar_decomposition_test.go"}
+	for _, name := range polarFiles {
+		target := filepath.Join(destPath, name)
+		data, err := ioutil.ReadFile(target)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+
+		lines := strings.Split(string(data), "\n")
+		for index, line := range lines {
+			trimmed := strings.TrimSpace(line)
+			switch {
+			case strings.HasPrefix(trimmed, "polarReconstructionTolerance64 "):
+				lines[index] = strings.Replace(line, "1e-6", "1e-12", 1)
+			case strings.HasPrefix(trimmed, "polarConvergenceTolerance64 "):
+				lines[index] = strings.Replace(line, "5e-7", "1e-13", 1)
+			case strings.HasPrefix(trimmed, "polarConditionLimit64 "):
+				lines[index] = strings.Replace(line, "1e6", "1e12", 1)
+			}
+			lines[index] = strings.Replace(lines[index], "float32:", "float64:", 1)
+		}
+		content := strings.Join(lines, "\n")
+
+		if err := ioutil.WriteFile(target, []byte(content), 0644); err != nil {
+			return err
+		}
+		output, err := exec.Command("gofmt", "-w", target).CombinedOutput()
+		if err != nil {
+			os.Stdout.Write(output)
+			return err
+		}
+	}
+
+	return nil
 }
 
 func rungofmt(path string, fiximports bool, rewriteRules []string) error {
