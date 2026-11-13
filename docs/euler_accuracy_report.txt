@@ -1,0 +1,10 @@
+=== mgl64 Euler<->Mat3 test matrix (six Tait-Bryan orders) ===
+ord         n  maxResid(deg) meanResid(deg) maxAngErr(deg) meanAngErr(deg)       gimDet  gimWorst(deg) maxStep(deg)
+XYZ    110940      2.091e-06      3.006e-07      2.074e-11      2.803e-12     14792/14792      1.708e-06       0.0500
+XZY    110940      2.415e-06      2.679e-07      2.074e-11      2.803e-12     14792/14792      1.708e-06       0.0500
+YXZ    110940      2.091e-06      2.841e-07      2.074e-11      2.803e-12     14792/14792      1.708e-06       0.0500
+YZX    110940      2.415e-06      2.710e-07      2.074e-11      2.803e-12     14792/14792      1.708e-06       0.0500
+ZXY    110940      2.091e-06      2.733e-07      2.074e-11      2.803e-12     14792/14792      1.207e-06       0.0500
+ZYX    110940      2.091e-06      2.978e-07      2.074e-11      2.803e-12     14792/14792      1.207e-06       0.0500
+
+Global worst round-trip residual = 2.415e-06 deg (requirement < 0.01 deg): PASS=true
